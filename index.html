@@ -839,7 +839,7 @@ function loadModel() {
     if (!engine.ok) throw new Error(`실행 엔진 파일 응답 ${engine.status}`);
     ort.env.wasm.wasmBinary = await engine.arrayBuffer();
     let done = 0;
-    const parts = await Promise.all(Array.from({ length: PARTS }, (_, i) => fetch(`model/part${i}.wasm`).then((r) => {
+    const parts = await Promise.all(Array.from({ length: PARTS }, (_, i) => fetch(`part${i}.wasm`).then((r) => {
       if (!r.ok) throw new Error(`모델 파일 ${i + 1}/${PARTS} 응답 ${r.status}`);
       return r.arrayBuffer();
     }).then((b) => { done += 1; setStatus("모델을 불러오는 중입니다 (약 61MB, 처음 한 번만)…", false, done / PARTS * 90); return b; })));
@@ -923,7 +923,7 @@ $("example-grid").addEventListener("click", async (e) => {
   const d = DEMO[Number(btn.dataset.i)];
   btn.setAttribute("aria-busy", "true");
   try {
-    const res = await fetch("demo/" + d.file);
+    const res = await fetch(d.file);
     if (!res.ok) throw new Error(res.status);
     const file = new File([await res.blob()], d.file, { type: "image/png" });
     clearExample();
@@ -989,7 +989,7 @@ async function renderDemo() {
   const token = ++demoToken;
   const env = ENV_NAMES[d.environment] || d.environment;
   const truth = d.class === "pothole" ? "포트홀" : "정상";
-  $("demo-img").src = "demo/" + d.file;
+  $("demo-img").src = d.file;
   $("demo-img").alt = `${env} 도로 사진, 정답 ${truth}`;
   $("demo-count").textContent = `${demoIndex + 1} / ${DEMO.length}`;
   $("demo-verdict").className = "stage-verdict";
@@ -998,7 +998,7 @@ async function renderDemo() {
   renderGauge($("demo-gauge"), null);
   demoBusy = true;
   try {
-    const blob = await (await fetch("demo/" + d.file)).blob();
+    const blob = await (await fetch(d.file)).blob();
     const r = await predictBlob(blob);
     if (token !== demoToken) return;
     $("demo-verdict").className = "stage-verdict " + pillClass(r);
