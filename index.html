@@ -105,6 +105,13 @@ h1 { margin: 21px 0 14px; font-size: clamp(38px, 4vw, 68px); font-weight: 800; l
 .result-notice { padding: 18px 22px; border-left: 4px solid #2a2d34; background: #f7f7f8; }
 .result-notice .card-title { margin-bottom: 10px; font-size: 17px; }
 .note-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+.mobile-notice { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 16px; background: var(--th); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.5; }
+.real-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-top: 14px; }
+.real-item { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 2px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); color: var(--ink); font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.real-item img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; }
+.real-cap { padding: 0 8px 8px; font-size: 12.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.real-item.ok { border-color: #2f7d32; } .real-item.ng { border-color: #d9480f; }
+.mobile-notice button { margin-left: auto; font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .note-list li + li { margin-top: 6px; }
 /* demo */
 .stage { overflow: hidden; border-radius: 20px; background: var(--stage); color: var(--on-stage); }
@@ -578,6 +585,12 @@ h1 { margin: 21px 0 14px; font-size: clamp(38px, 4vw, 68px); font-weight: 800; l
         </div>
       </div>
       <p class="hint">사진은 support 예시와 겹치지 않는 개발용 140장에서 골랐습니다. 점수와 시간은 이 브라우저에서 방금 계산한 실제 값입니다.</p>
+      <section class="measure-card real-block section-gap" aria-labelledby="t-real">
+        <h2 class="card-title" id="t-real">실제 도로 사진 예시 (Kaggle 공개 자료)</h2>
+        <p class="hint">사진을 누르면 같은 모델로 바로 판정합니다. 이 모델의 기준점은 AI 예시 20장으로만 만들었고 실제 사진 보정은 적용하지 않았습니다. 실제 사진 평가에서 이 모델은 정상 사진의 약 53%를 포트홀로 잘못 판정했으므로, 틀린 판정이 자주 나올 수 있습니다. 사진은 결과를 보지 않고 무작위로 고른 8장(포트홀 4, 정상 4)입니다.</p>
+        <div class="real-grid" id="real-grid"></div>
+        <p class="hint">출처: Atulya Kumar, “Pothole Detection Dataset”, Kaggle (CC0: Public Domain).</p>
+      </section>
     </section>
 
   </main>
@@ -816,7 +829,20 @@ function renderGauge(el, score) {
     `<p class="gauge-note">곡선은 개발용 140장(정상 70장·포트홀 70장)에 최종 모델을 적용한 점수가 어디에 많이 모였는지를 보여 줍니다 (seed 5개 평균 점수). 시연 사진도 이 자료에서 골랐으며, 판정에는 쓰지 않는 참고 그림입니다. 0 오른쪽이면 포트홀로 판정합니다.</p>`;
 }
 const PARTS = 5;
+const MODEL_CACHE = "pothole-model-v1"; // 모델 파일을 바꾸면 이름을 올려 예전 저장본을 쓰지 않게 한다
+const TOTAL_BYTES = 11246032 + 12500000 * 4 + 10882212; // 실행 엔진 + 모델 조각 5개
 const $ = (id) => document.getElementById(id);
+/* 휴대폰 안내: 모델(약 72MB)을 기기에서 직접 실행하므로 휴대폰에서는 느리거나 실패할 수 있다 */
+(() => {
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 820);
+  if (!mobile) return;
+  const n = document.createElement("div");
+  n.className = "mobile-notice";
+  n.setAttribute("role", "note");
+  n.innerHTML = "<b>휴대폰에서 열었습니다.</b> 판정 모델(약 72MB)을 이 기기에서 직접 실행하므로 느리거나 실패할 수 있습니다. 데스크톱 브라우저를 권장합니다. <button type=\"button\" aria-label=\"안내 닫기\">닫기</button>";
+  n.querySelector("button").addEventListener("click", () => n.remove());
+  document.body.prepend(n);
+})();
 const fmtScore = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(3);
 const fmtSeconds = (v) => v.toFixed(2) + "초";
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -835,14 +861,39 @@ function loadModel() {
   if (sessionPromise) return sessionPromise;
   sessionPromise = (async () => {
     ort.env.wasm.numThreads = 1;
-    const engine = await fetch("ort-wasm-simd-threaded.wasm");
-    if (!engine.ok) throw new Error(`실행 엔진 파일 응답 ${engine.status}`);
-    ort.env.wasm.wasmBinary = await engine.arrayBuffer();
-    let done = 0;
-    const parts = await Promise.all(Array.from({ length: PARTS }, (_, i) => fetch(`part${i}.wasm`).then((r) => {
-      if (!r.ok) throw new Error(`모델 파일 ${i + 1}/${PARTS} 응답 ${r.status}`);
-      return r.arrayBuffer();
-    }).then((b) => { done += 1; setStatus("모델을 불러오는 중입니다 (약 61MB, 처음 한 번만)…", false, done / PARTS * 90); return b; })));
+    // 받은 파일은 브라우저 캐시(Cache Storage)에 저장해 두고, 다음 방문부터는 내려받지 않고 바로 꺼내 쓴다.
+    let cache = null;
+    try { cache = await caches.open(MODEL_CACHE); } catch (e) { cache = null; }
+    let got = 0, fromCache = 0;
+    const show = () => {
+      const mb = (got / 1e6).toFixed(1), tot = (TOTAL_BYTES / 1e6).toFixed(1);
+      const msg = fromCache === PARTS + 1 ? "저장해 둔 모델을 여는 중입니다…" : `모델을 내려받는 중입니다 ${mb} / ${tot}MB (처음 한 번만)…`;
+      setStatus(msg, false, Math.min(95, got / TOTAL_BYTES * 95));
+    };
+    async function getFile(url, label) {
+      if (cache) {
+        try { const hit = await cache.match(url); if (hit) { const b = await hit.arrayBuffer(); got += b.byteLength; fromCache += 1; show(); return b; } } catch (e) {}
+      }
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`${label} 응답 ${r.status}`);
+      let buf;
+      if (r.body && r.body.getReader) {
+        const reader = r.body.getReader(), chunks = [];
+        let n = 0;
+        for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); n += value.length; got += value.length; show(); }
+        const u = new Uint8Array(n); let o = 0;
+        for (const c of chunks) { u.set(c, o); o += c.length; }
+        buf = u.buffer;
+      } else { buf = await r.arrayBuffer(); got += buf.byteLength; show(); }
+      if (cache) { try { await cache.put(url, new Response(buf.slice(0))); } catch (e) {} }
+      return buf;
+    }
+    show();
+    const [engineBuf, ...parts] = await Promise.all([
+      getFile("ort-wasm-simd-threaded.wasm", "실행 엔진 파일"),
+      ...Array.from({ length: PARTS }, (_, i) => getFile(`part${i}.wasm`, `모델 파일 ${i + 1}/${PARTS}`)),
+    ]);
+    ort.env.wasm.wasmBinary = engineBuf;
     const buf = new Uint8Array(parts.reduce((a, b) => a + b.byteLength, 0));
     let off = 0;
     for (const p of parts) { buf.set(new Uint8Array(p), off); off += p.byteLength; }
@@ -1012,6 +1063,35 @@ async function renderDemo() {
   }
 }
 function step(n) { demoIndex = (demoIndex + n + DEMO.length) % DEMO.length; renderDemo(); }
+
+/* 실제 도로 사진 예시: 누르면 같은 모델로 판정하고 정답과 맞았는지 표시 */
+const REAL = [1, 2, 3, 4].flatMap((k) => [{ file: `real_pothole_${k}.jpg`, cls: "pothole" }, { file: `real_normal_${k}.jpg`, cls: "normal" }]);
+(function renderReal() {
+  const grid = $("real-grid");
+  grid.innerHTML = REAL.map((d, i) => {
+    const truth = d.cls === "pothole" ? "포트홀" : "정상";
+    return `<button type="button" class="real-item" data-i="${i}" aria-label="실제 사진 ${i + 1}, 정답 ${truth}"><img alt="" loading="lazy" src="${d.file}"><span class="real-cap">정답 ${truth} · 눌러서 판정</span></button>`;
+  }).join("");
+  grid.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".real-item");
+    if (!btn || btn.getAttribute("aria-busy") === "true") return;
+    const d = REAL[Number(btn.dataset.i)];
+    const cap = btn.querySelector(".real-cap");
+    const truth = d.cls === "pothole" ? "포트홀" : "정상";
+    btn.setAttribute("aria-busy", "true");
+    cap.textContent = `정답 ${truth} · 판정 중…`;
+    try {
+      const r = await predictBlob(await (await fetch(d.file)).blob());
+      const ok = r.pothole === (d.cls === "pothole");
+      btn.classList.remove("ok", "ng"); btn.classList.add(ok ? "ok" : "ng");
+      cap.textContent = `정답 ${truth} · 판정 ${verdictText(r)} (${ok ? "맞음" : "틀림"}) · ${agreeText(r)} · 점수 ${fmtScore(r.mean_score)}`;
+    } catch {
+      cap.textContent = `정답 ${truth} · 판정하지 못했습니다`;
+    } finally {
+      btn.setAttribute("aria-busy", "false");
+    }
+  });
+})();
 function stopAuto() { if (demoTimer) { clearInterval(demoTimer); demoTimer = null; $("demo-auto").textContent = "자동 넘김"; } }
 function startDemo() { if (!demoStarted) { demoStarted = true; renderDemo(); } }
 $("demo-prev").addEventListener("click", () => step(-1));
