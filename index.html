@@ -446,6 +446,10 @@ h1 { margin: 21px 0 14px; font-size: clamp(38px, 4vw, 68px); font-weight: 800; l
             <label><input id="roi-auto" type="checkbox" checked> 하단 중앙 자동 ROI 판정</label>
             <p class="hint" id="roi-help">켜면 하단 중앙의 ROI를 판정합니다. 끄면 전체 사진을 판정합니다.</p>
             <p class="hint" id="roi-result" role="status"></p>
+            <figure class="preview" id="roi-preview" hidden>
+              <img id="roi-preview-img" alt="자동 ROI로 잘라낸 판정 영역">
+              <figcaption class="preview-meta">자동 ROI로 잘라낸 판정 영역</figcaption>
+            </figure>
           </div>
           <div class="actions">
             <button class="btn primary" type="button" id="run" disabled>판정</button>
@@ -801,7 +805,10 @@ async function imageToInput(blob, size, roi = "") {
   for (let i = 0; i < plane; i++) {
     for (let c = 0; c < 3; c++) input[c * plane + i] = (rgb[i * 3 + c] / 255 - MEAN[c]) / STD[c];
   }
-  return { input, width: canvas.width, height: canvas.height };
+  return {
+    input, width: canvas.width, height: canvas.height,
+    roiPreview: roi ? canvas.toDataURL("image/jpeg", 0.85) : null
+  };
 }
 
 if (typeof window !== "undefined") window.PotholePre = { pilResizeRGB, pilUnsharpRGBA, imageToInput };
@@ -941,7 +948,7 @@ function loadModel() {
 async function predictBlob(blob, roi = "") {
   const session = await loadModel();
   const started = performance.now();
-  const { input, width, height } = await window.PotholePre.imageToInput(blob, 384, roi);
+  const { input, width, height, roiPreview } = await window.PotholePre.imageToInput(blob, 384, roi);
   const res = await session.run({ image: new ort.Tensor("float32", input, [1, 3, 384, 384]) });
   const scores = Array.from(res.scores.data);
   const seeds = [7, 19, 42, 73, 101].map((seed, i) => ({ seed, score: scores[i], pothole: scores[i] >= 0 }));
@@ -950,7 +957,7 @@ async function predictBlob(blob, roi = "") {
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
   // Final verdict: the mean of the five seed scores against threshold 0 (score-averaging ensemble).
   return { pothole: meanScore >= 0, mixed, votes, total: seeds.length, seeds, width, height,
-           mean_score: scores.reduce((a, b) => a + b, 0) / scores.length, seconds: (performance.now() - started) / 1000 };
+           roiPreview, mean_score: scores.reduce((a, b) => a + b, 0) / scores.length, seconds: (performance.now() - started) / 1000 };
 }
 
 /* 화면 전환 */
@@ -988,6 +995,7 @@ function pick(file) {
   $("roi-controls").hidden = false;
 
   $("roi-result").textContent = "";
+  $("roi-preview").hidden = true;
   $("file-name").textContent = file.name;
   const img = $("preview-img");
   img.onload = () => { $("preview-size").textContent = `${img.naturalWidth} × ${img.naturalHeight} · 전체 화면 입력`; };
@@ -1045,11 +1053,16 @@ $("run").addEventListener("click", async () => {
     const image = $("preview-img");
     const roi = useRoi ? autoRoi(image.naturalWidth, image.naturalHeight) : "";
     $("roi-result").textContent = "";
+    $("roi-preview").hidden = true;
     if (useRoi && !roi) throw new RangeError("사진이 표시된 뒤 다시 판정해 주세요.");
     const r = await predictBlob(file, roi);
     if (picked !== file || $("roi-auto").checked !== useRoi) return;
     r.filename = roi ? file.name + " (ROI)" : file.name;
     renderResult(r);
+    if (r.roiPreview) {
+      $("roi-preview-img").src = r.roiPreview;
+      $("roi-preview").hidden = false;
+    }
     $("roi-result").textContent = roi
       ? `최종 결과: 자동 ROI 판정 · 적용 좌표: ${roi}`
       : "최종 결과: 전체 사진 판정";
