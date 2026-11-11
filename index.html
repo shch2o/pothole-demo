@@ -439,16 +439,26 @@ h1 { margin: 21px 0 14px; font-size: clamp(38px, 4vw, 68px); font-weight: 800; l
           </div>
           <div class="empty-preview" id="empty-preview">사진을 고르면 여기에 표시됩니다.</div>
           <figure class="preview" id="preview" hidden>
-            <img id="preview-img" alt="판정할 도로 사진">
+            <div style="position:relative">
+              <img id="preview-img" alt="판정할 도로 사진">
+              <svg id="polygon-overlay" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" aria-hidden="true"><polygon fill="#ffc34a55" stroke="#ffc34a" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+            </div>
             <figcaption class="preview-meta"><span id="preview-size"></span><span>샤프닝 후 384 × 384로 축소해 판정</span></figcaption>
           </figure>
           <div id="roi-controls" hidden>
-            <label><input id="roi-auto" type="checkbox" checked> 하단 중앙 자동 ROI 판정</label>
-            <p class="hint" id="roi-help">켜면 하단 중앙의 ROI를 판정합니다. 끄면 전체 사진을 판정합니다.</p>
+            <label for="input-mode">판정에 사용할 영역</label>
+            <select id="input-mode">
+              <option value="road">AI 자동 도로 추출</option>
+              <option value="whole">원본 이미지</option>
+              <option value="rect">하단 중앙 사각형 ROI</option>
+              <option value="polygon">다각형 ROI (고정 CCTV)</option>
+            </select>
+            <p class="hint" id="roi-help">자동 추출은 도로 픽셀을 남기고 배경을 회색으로 가립니다. 기존 분류기로 실험 판정합니다.</p>
+            <button class="btn" type="button" id="polygon-reset" hidden>다각형 다시 그리기</button>
             <p class="hint" id="roi-result" role="status"></p>
             <figure class="preview" id="roi-preview" hidden>
-              <img id="roi-preview-img" alt="자동 ROI로 잘라낸 판정 영역">
-              <figcaption class="preview-meta">자동 ROI로 잘라낸 판정 영역</figcaption>
+              <img id="roi-preview-img" alt="판정에 사용한 영역">
+              <figcaption class="preview-meta">판정에 사용한 영역</figcaption>
             </figure>
           </div>
           <div class="actions">
@@ -815,6 +825,7 @@ if (typeof window !== "undefined") window.PotholePre = { pilResizeRGB, pilUnshar
 
 </script>
 <script type="module">
+import { prepareMaskedImage } from "./road-mask.mjs";
 import * as ort from "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.bundle.min.mjs";
 
 const DEMO = [{"file": "day_dry_04_normal.png", "environment": "day_dry", "class": "normal"}, {"file": "day_dry_04_pothole.png", "environment": "day_dry", "class": "pothole"}, {"file": "day_wet_04_normal.png", "environment": "day_wet", "class": "normal"}, {"file": "day_wet_04_pothole.png", "environment": "day_wet", "class": "pothole"}, {"file": "fog_04_normal.png", "environment": "fog", "class": "normal"}, {"file": "fog_04_pothole.png", "environment": "fog", "class": "pothole"}, {"file": "warm_backlight_10_normal.png", "environment": "warm_backlight", "class": "normal"}, {"file": "warm_backlight_10_pothole.png", "environment": "warm_backlight", "class": "pothole"}, {"file": "night_05_normal.png", "environment": "night", "class": "normal"}, {"file": "night_05_pothole.png", "environment": "night", "class": "pothole"}];
@@ -981,6 +992,45 @@ function autoRoi(width, height) {
           Math.ceil(width * 0.9), height].join(",");
 }
 
+const mode = $("input-mode");
+const preview = $("preview-img");
+const overlay = $("polygon-overlay");
+const polygon = [];
+const modeNames = { road: "AI 도로 추출", whole: "원본", rect: "사각형 ROI", polygon: "다각형 ROI" };
+
+function updatePolygon() {
+  const show = mode.value === "polygon";
+  overlay.style.visibility = show ? "visible" : "hidden";
+  overlay.setAttribute("viewBox", "0 0 " + preview.naturalWidth + " " + preview.naturalHeight);
+  overlay.querySelector("polygon").setAttribute("points", polygon.map(([x,y]) =>
+    [x * preview.naturalWidth, y * preview.naturalHeight].join(",")).join(" "));
+  $("polygon-reset").hidden = !show;
+  if (show) $("roi-help").textContent = "사진에서 도로 경계점을 순서대로 클릭하세요. 현재 " + polygon.length + "개";
+}
+
+mode.addEventListener("change", () => {
+  $("roi-preview").hidden = true;
+  $("roi-result").textContent = "";
+  $("roi-help").textContent = mode.value === "road"
+    ? "자동 추출은 도로 픽셀을 남기고 배경을 회색으로 가립니다. 기존 분류기로 실험 판정합니다."
+    : mode.value === "rect" ? "가로 중앙 80%, 세로 하단 60%를 사용합니다." : "선택한 입력으로 판정합니다.";
+  updatePolygon();
+});
+preview.addEventListener("click", (event) => {
+  if (mode.value !== "polygon" || !preview.naturalWidth) return;
+  const box = preview.getBoundingClientRect();
+  const scale = Math.min(box.width / preview.naturalWidth, box.height / preview.naturalHeight);
+  const w = preview.naturalWidth * scale, h = preview.naturalHeight * scale;
+  const x = (event.clientX - box.left - (box.width - w) / 2) / w;
+  const y = (event.clientY - box.top - (box.height - h) / 2) / h;
+  if (x >= 0 && y >= 0 && x <= 1 && y <= 1) {
+    polygon.push([x, y]);
+    updatePolygon();
+  }
+});
+$("polygon-reset").addEventListener("click", () => { polygon.length = 0; updatePolygon(); });
+updatePolygon();
+
 /* 판정 */
 let picked = null;
 let historyRows = [];
@@ -998,7 +1048,7 @@ function pick(file) {
   $("roi-preview").hidden = true;
   $("file-name").textContent = file.name;
   const img = $("preview-img");
-  img.onload = () => { $("preview-size").textContent = `${img.naturalWidth} × ${img.naturalHeight} · 전체 화면 입력`; };
+  img.onload = () => { $("preview-size").textContent = `${img.naturalWidth} × ${img.naturalHeight} `; updatePolygon(); };
   img.src = URL.createObjectURL(file);
   $("preview").hidden = false;
   $("empty-preview").hidden = true;
@@ -1049,23 +1099,31 @@ $("run").addEventListener("click", async () => {
   $("judge-error").hidden = true;
   try {
     const file = picked;
-    const useRoi = $("roi-auto").checked;
-    const image = $("preview-img");
-    const roi = useRoi ? autoRoi(image.naturalWidth, image.naturalHeight) : "";
+    const selectedMode = mode.value;
+    const points = polygon.slice();
     $("roi-result").textContent = "";
     $("roi-preview").hidden = true;
-    if (useRoi && !roi) throw new RangeError("사진이 표시된 뒤 다시 판정해 주세요.");
-    const r = await predictBlob(file, roi);
-    if (picked !== file || $("roi-auto").checked !== useRoi) return;
-    r.filename = roi ? file.name + " (ROI)" : file.name;
+    const roi = selectedMode === "rect" ? autoRoi(preview.naturalWidth, preview.naturalHeight) : "";
+    if (selectedMode === "rect" && !roi) throw new RangeError("사진이 표시된 뒤 다시 판정해 주세요.");
+    const masked = selectedMode === "road" || selectedMode === "polygon";
+    if (masked) {
+      run.textContent = selectedMode === "road" ? "도로 영역 추출 중…" : "다각형 적용 중…";
+      await loadModel();
+    }
+    const input = masked ? await prepareMaskedImage(file, selectedMode, points, ort) : file;
+    run.textContent = "판정 중…";
+    const r = await predictBlob(input, roi);
+    if (picked !== file || mode.value !== selectedMode) return;
+    r.filename = file.name + " (" + modeNames[selectedMode] + ")";
     renderResult(r);
-    if (r.roiPreview) {
-      $("roi-preview-img").src = r.roiPreview;
+    if (r.roiPreview || masked) {
+      const image = $("roi-preview-img");
+      if (image.src.startsWith("blob:")) URL.revokeObjectURL(image.src);
+      image.src = masked ? URL.createObjectURL(input) : r.roiPreview;
       $("roi-preview").hidden = false;
     }
-    $("roi-result").textContent = roi
-      ? `최종 결과: 자동 ROI 판정 · 적용 좌표: ${roi}`
-      : "최종 결과: 전체 사진 판정";
+    $("roi-result").textContent = "최종 결과 · " + modeNames[selectedMode] +
+      (roi ? " · 적용 좌표: " + roi : "");
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     $("judge-error").textContent = err instanceof RangeError
